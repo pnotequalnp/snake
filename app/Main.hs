@@ -1,3 +1,5 @@
+{-# LANGUAGE PartialTypeSignatures #-}
+
 module Main (main) where
 
 import Control.Monad (guard)
@@ -11,33 +13,45 @@ import Data.Maybe (fromMaybe)
 import Data.Sequence (Seq, pattern Empty, pattern (:<|), pattern (:|>))
 import FRP.Yampa
 import Numeric.Natural (Natural)
+import System.Random (StdGen, mkStdGen)
+import System.Random qualified as Rand
 import Terminal (Point, runTerminal)
 import Terminal.Input (Key (..))
 
 main :: IO ()
 main = runTerminal proc (inp, dim) -> do
-  (charMap, score) <- snakeF -< (inp, dim)
+  (charMap, score) <- snakeF (mkStdGen 0) -< (inp, dim)
   dim' <- hold (0, 0) -< dim
   returnA -< guard (isNoEvent score) $> render dim' charMap
 
-snakeF :: SF (Event (NonEmpty Key), Event (Natural, Natural)) (Map Point Char, Event Natural)
-snakeF = proc (inp, dimE) -> do
-  bounds <- (\(x, y) -> (fromIntegral x - 2, fromIntegral y - 1)) ^<< hold (1, 1) -< dimE
-  direction <- hold (0, 1) -< mapFilterE (directionKey . NE.head) inp
-  snekHead <- accumHold (3, 3) -< Event (add2 direction)
-  let score = 0
-      grow = NoEvent
-  snekBody <- bodyF -< (snekHead, grow)
-  let walls = boundary bounds
-      snek = Map.singleton snekHead 'H' <> foldMap (`Map.singleton` 'T') snekBody
-      gameOver = not (inBounds bounds snekHead) || snekHead `elem` snekBody
+snakeF :: StdGen -> SF (Event (NonEmpty Key), Event (Natural, Natural)) (Map Point Char, Event Natural)
+snakeF g = proc (inp, dimE) -> do
+  rec
+    bounds <- (\(x, y) -> (fromIntegral x - 2, fromIntegral y - 1)) ^<< hold (1, 1) -< dimE
+    direction <- hold (0, 1) -< mapFilterE (directionKey . NE.head) inp
+    food' <- foodF g -< bounds
+    food <- dHold (10, 10) -< grow $> food'
+    snekHead <- accumHold (3, 3) -< Event (add2 direction)
+    let grow = guard (snekHead == food)
+    score <- accumHold 0 -< grow $> succ
+    snekBody <- bodyF -< (snekHead, grow)
+    let walls = boundary bounds
+        snek = Map.fromList [(snekHead, 'H'), (food, 'F')] <> foldMap (`Map.singleton` 'T') snekBody
+        gameOver = not (inBounds bounds snekHead) || snekHead `elem` snekBody
   returnA -< (snek <> walls, guard gameOver $> score)
 
-bodyF :: SF ((Int, Int), Event Int) (Seq (Int, Int))
+foodF :: StdGen -> SF Point Point
+foodF g = loopPre (Rand.split g) proc ((h, w), (g1, g2)) -> do
+  let (y, g1') = Rand.randomR (1, h - 1) g1
+      (x, g2') = Rand.randomR (1, w - 1) g2
+  returnA -< ((y, x), (g1', g2'))
+
+bodyF :: SF (Point, Event ()) (Seq Point)
 bodyF = proc (snekHead, grow) -> do
-  snd ^<< accumHold ((3, 3), (3, 2) :<| (3, 1) :<| Empty) -< case grow of
-    NoEvent -> Event (shiftHead snekHead)
-    Event _ -> Event (growHead snekHead)
+  snd ^<< accumHold ((3, 3), (3, 2) :<| (3, 1) :<| Empty)
+    -< case grow of
+      NoEvent -> Event (shiftHead snekHead)
+      Event _ -> Event (growHead snekHead)
   where
     shiftHead h' = \case
       (_, Empty) -> (h', Empty)
