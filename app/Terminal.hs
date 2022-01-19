@@ -8,57 +8,64 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (throwIO)
-import Control.Monad (guard)
+import Control.Monad (guard, void)
 import Control.Monad.Loops (whileM)
 import Data.Functor (($>))
 import Data.IORef (IORef, atomicModifyIORef, newIORef, readIORef, writeIORef)
 import Data.List.NonEmpty (NonEmpty, nonEmpty)
 import Data.Map (Map)
+import Data.Map qualified as Map
 import Data.Word (Word64)
 import FRP.Yampa (Arrow (..), DTime, Event (..), SF, maybeToEvent, reactimate)
 import GHC.Clock (getMonotonicTimeNSec)
-import Numeric.Natural (Natural)
-import System.Console.ANSI (clearScreen, hideCursor, showCursor)
+import System.Console.ANSI (clearScreen, hideCursor, setCursorPosition, showCursor)
 import System.Console.Terminal.Size (Window (Window), size)
 import System.IO (BufferMode (..), hReady, hSetBuffering, hSetEcho, stdin)
-import System.Process (system)
 import Terminal.Input (Key, getKey)
 
 type Point = (Int, Int)
 
-runTerminal :: SF (Event (NonEmpty Key), Event (Natural, Natural)) (Maybe String) -> IO ()
+runTerminal :: SF (Event (NonEmpty Key), Event Point) (Map Point Char, Event ()) -> IO ()
 runTerminal sf = do
   sizeRef <- newIORef undefined
-  -- _ <- system "tput smcup"
+  prevRef <- newIORef mempty
+  clearScreen
   hideCursor
   hSetEcho stdin False
   hSetBuffering stdin NoBuffering
   clock <- getMonotonicTimeNSec >>= newIORef
-  reactimate ((NoEvent,) <$> startup sizeRef) (getInput clock sizeRef) actuate sf
-  -- _ <- system "tput rmcup"
+  reactimate ((NoEvent,) <$> startup sizeRef) (getInput clock sizeRef) (actuate prevRef) sf
   showCursor
   where
     startup sizeRef =
       size >>= maybe (throwIO $ userError "Not attached to terminal") \(Window x y) ->
         writeIORef sizeRef (x, y) $> Event (x, y)
 
-terminalSize :: IORef (Natural, Natural) -> IO (Event (Natural, Natural))
+terminalSize :: IORef Point -> IO (Event Point)
 terminalSize sizeRef =
   size >>= maybe (throwIO $ userError "Not attached to terminal") \(Window x y) -> do
     let s' = (x, y)
     s <- atomicModifyIORef sizeRef (const s' &&& id)
     pure $ guard (s /= s') $> s'
 
-actuate :: Bool -> Maybe String -> IO Bool
-actuate _ = \case
-  Nothing -> pure True
-  Just picture -> clearScreen *> putStr picture $> False
+actuate :: IORef (Map Point Char) -> Bool -> (Map Point Char, Event ()) -> IO Bool
+actuate prevRef _ = \case
+  (_, Event ()) -> pure True
+  (charMap, NoEvent) -> do
+    prev <- atomicModifyIORef prevRef (const charMap &&& id)
+    let new = Map.differenceWith (const . Just) charMap prev
+        gone = Map.difference prev charMap $> ' '
+    render $ new <> gone
+    pure False
+
+render :: Map Point Char -> IO ()
+render = void . Map.traverseWithKey \x c -> uncurry setCursorPosition x *> putChar c
 
 getInput ::
   IORef Word64 ->
-  IORef (Natural, Natural) ->
+  IORef Point ->
   Bool ->
-  IO (DTime, Maybe (Event (NonEmpty Key), Event (Natural, Natural)))
+  IO (DTime, Maybe (Event (NonEmpty Key), Event Point))
 getInput clock sizeRef _ = do
   termSize <- terminalSize sizeRef
   keys <- whileM (hReady stdin) getKey

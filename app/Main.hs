@@ -19,26 +19,27 @@ import Terminal (Point, runTerminal)
 import Terminal.Input (Key (..))
 
 main :: IO ()
-main = runTerminal proc (inp, dim) -> do
-  (charMap, score) <- snakeF (mkStdGen 0) -< (inp, dim)
-  dim' <- hold (0, 0) -< dim
-  returnA -< guard (isNoEvent score) $> render dim' charMap
+main = runTerminal proc evs -> do
+  (picture, score) <- snakeF (mkStdGen 0) -< evs
+  returnA -< (picture, score $> ())
 
-snakeF :: StdGen -> SF (Event (NonEmpty Key), Event (Natural, Natural)) (Map Point Char, Event Natural)
+snakeF ::
+  StdGen ->
+  SF (Event (NonEmpty Key), Event Point) (Map Point Char, Event (Maybe Natural))
 snakeF g = proc (inp, dimE) -> do
-  rec
-    bounds <- (\(x, y) -> (fromIntegral x - 2, fromIntegral y - 1)) ^<< hold (1, 1) -< dimE
-    direction <- hold (0, 1) -< mapFilterE (directionKey . NE.head) inp
-    food' <- foodF g -< bounds
-    food <- dHold (10, 10) -< grow $> food'
-    snekHead <- accumHold (3, 3) -< Event (add2 direction)
-    let grow = guard (snekHead == food)
-    score <- accumHold 0 -< grow $> succ
-    snekBody <- bodyF -< (snekHead, grow)
-    let walls = boundary bounds
-        snek = Map.fromList [(snekHead, 'H'), (food, 'F')] <> foldMap (`Map.singleton` 'T') snekBody
-        gameOver = not (inBounds bounds snekHead) || snekHead `elem` snekBody
-  returnA -< (snek <> walls, guard gameOver $> score)
+  rec bounds <- hold (1, 1) -< dimE
+      direction <- hold (0, 1) -< mapFilterE (directionKey . NE.head) inp
+      food' <- foodF g -< bounds
+      food <- dHold (10, 10) -< grow $> food'
+      snekHead <- accumHold (3, 3) -< Event (add2 direction)
+      score <- accumHold 0 -< grow $> succ
+      snekBody <- bodyF -< (snekHead, grow)
+      let grow = guard (snekHead == food)
+          walls = boundary bounds
+          snek = Map.singleton snekHead 'H' <> foldMap (`Map.singleton` 'T') snekBody
+          scene = Map.singleton food 'F' <> snek <> walls
+          gameOver = not (inBounds bounds snekHead) || snekHead `elem` snekBody
+  returnA -< (scene, guard gameOver $> Just score)
 
 foodF :: StdGen -> SF Point Point
 foodF g = loopPre (Rand.split g) proc ((h, w), (g1, g2)) -> do
@@ -58,19 +59,31 @@ bodyF = proc (snekHead, grow) -> do
       (h, t :|> _) -> (h', h :<| t)
     growHead h' (h, t) = (h', h :<| t)
 
+gameOverF ::
+  Natural ->
+  SF (Event (NonEmpty Key), Event Point) (Maybe String, Event (Maybe Natural))
+gameOverF score = proc (inp, _dim) -> do
+  let msg = "Game Over! You scored " <> show score <> "!"
+  returnA
+    -< case inp of
+      NoEvent -> (Just msg, NoEvent)
+      Event k -> case NE.head k of
+        Unicode '\n' -> (Just msg, Event Nothing)
+        Unicode ' ' -> (Just msg, Event Nothing)
+        Unicode 'q' -> (Nothing, NoEvent)
+        _ -> (Just msg, NoEvent)
+
 boundary :: Point -> Map Point Char
 boundary (h, w) = l <> r <> t <> b <> cs
   where
-    l = Map.fromList $ (,'┃') . (,0) <$> [1 .. h - 1]
-    r = Map.fromList $ (,'┃') . (,w) <$> [1 .. h - 1]
-    t = Map.fromList $ (,'━') . (0,) <$> [1 .. w - 1]
-    b = Map.fromList $ (,'━') . (h,) <$> [1 .. w - 1]
-    cs = Map.fromList [((0, 0), '┏'), ((0, w), '┓'), ((h, 0), '┗'), ((h, w), '┛')]
+    l = Map.fromList $ (,'┃') . (,0) <$> [1 .. h - 2]
+    r = Map.fromList $ (,'┃') . (,w - 1) <$> [1 .. h - 2]
+    t = Map.fromList $ (,'━') . (0,) <$> [1 .. w - 2]
+    b = Map.fromList $ (,'━') . (h - 1,) <$> [1 .. w - 2]
+    cs = Map.fromList [((0, 0), '┏'), ((0, w - 1), '┓'), ((h - 1, 0), '┗'), ((h - 1, w - 1), '┛')]
 
-render :: (Natural, Natural) -> Map Point Char -> String
-render (fromIntegral -> h, fromIntegral -> w) charMap = intercalate "\n" $ renderLine <$> [0 .. h - 1 :: Int]
-  where
-    renderLine n = fromMaybe ' ' . (`Map.lookup` charMap) . (n,) <$> [0 .. w - 1]
+text :: String -> Point -> Map Point Char
+text msg (y, x) = Map.fromList $ zipWith ((,) . (y,)) [x ..] msg
 
 directionKey :: Key -> Maybe Point
 directionKey = \case
