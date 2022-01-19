@@ -20,12 +20,12 @@ import Terminal.Input (Key (..))
 
 main :: IO ()
 main = runTerminal proc evs -> do
-  (picture, score) <- snakeF (mkStdGen 0) -< evs
-  returnA -< (picture, score $> ())
+  (picture, done) <- switch (first (, NoEvent) ^<< snakeF (mkStdGen 0)) gameOverF -< evs
+  returnA -< (picture, done)
 
 snakeF ::
   StdGen ->
-  SF (Event (NonEmpty Key), Event Point) (Map Point Char, Event (Maybe Natural))
+  SF (Event (NonEmpty Key), Event Point) (Map Point Char, Event Natural)
 snakeF g = proc (inp, dimE) -> do
   rec bounds <- hold (1, 1) -< dimE
       direction <- hold (0, 1) -< mapFilterE (directionKey . NE.head) inp
@@ -39,7 +39,7 @@ snakeF g = proc (inp, dimE) -> do
           snek = Map.singleton snekHead 'H' <> foldMap (`Map.singleton` 'T') snekBody
           scene = Map.singleton food 'F' <> snek <> walls
           gameOver = not (inBounds bounds snekHead) || snekHead `elem` snekBody
-  returnA -< (scene, guard gameOver $> Just score)
+  returnA -< (scene, guard gameOver $> score)
 
 foodF :: StdGen -> SF Point Point
 foodF g = loopPre (Rand.split g) proc ((h, w), (g1, g2)) -> do
@@ -61,17 +61,19 @@ bodyF = proc (snekHead, grow) -> do
 
 gameOverF ::
   Natural ->
-  SF (Event (NonEmpty Key), Event Point) (Maybe String, Event (Maybe Natural))
+  SF (Event (NonEmpty Key), Event Point) (Map Point Char, Event ())
 gameOverF score = proc (inp, _dim) -> do
   let msg = "Game Over! You scored " <> show score <> "!"
+      scene = text msg (50, 50)
   returnA
     -< case inp of
-      NoEvent -> (Just msg, NoEvent)
-      Event k -> case NE.head k of
-        Unicode '\n' -> (Just msg, Event Nothing)
-        Unicode ' ' -> (Just msg, Event Nothing)
-        Unicode 'q' -> (Nothing, NoEvent)
-        _ -> (Just msg, NoEvent)
+      NoEvent -> (scene, NoEvent)
+      Event k -> (scene, Event ())
+        -- case NE.head k of
+        -- Unicode '\n' -> (scene, Event Nothing)
+        -- Unicode ' ' -> (scene, Event Nothing)
+        -- Unicode 'q' -> (Nothing, NoEvent)
+        -- _ -> (scene, NoEvent)
 
 boundary :: Point -> Map Point Char
 boundary (h, w) = l <> r <> t <> b <> cs
